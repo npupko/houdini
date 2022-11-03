@@ -17,6 +17,7 @@ import type { LoadEvent, RequestEvent } from '@sveltejs/kit'
 import { get, Readable, Writable, writable } from 'svelte/store'
 
 import { clientStarted, isBrowser, error } from '../adapter'
+import { loadingStateForSelection } from '../lib/loading'
 import { getCurrentClient } from '../network'
 import { getSession } from '../session'
 import { BaseStore } from './store'
@@ -343,7 +344,21 @@ If this is leftovers from old versions of houdini, you can safely remove this \`
 	}
 
 	protected setFetching(isFetching: boolean) {
-		this.store?.update((s) => ({ ...s, isFetching }))
+		this.store?.update((s) => {
+			// build up the new value
+			const newValue = {
+				...s,
+				isFetching,
+			}
+
+			if (isFetching) {
+				// if we are setting the loading state to true, then we should update the store
+				// value with the loading value
+				newValue.data = loadingStateForSelection<_Data>(this.artifact.selection)
+			}
+
+			return newValue
+		})
 	}
 
 	private get initialState(): QueryResult<_Data, _Input> & _ExtraFields {
