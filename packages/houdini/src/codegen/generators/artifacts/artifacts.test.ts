@@ -2900,6 +2900,77 @@ test('operation inputs', async function () {
 	`)
 })
 
+test('adds listOf information', async function () {
+	// execute the generator
+	await runPipeline(config, [
+		mockCollectedDoc(
+			`
+			query TestQuery {
+				friends { 
+					name
+				}
+			}
+			`
+		),
+	])
+
+	// load the contents of the file
+	const queryContents = await fs.readFile(path.join(config.artifactPath(docs[0].document)))
+	expect(queryContents).toBeTruthy()
+	// parse the contents
+	const parsedQuery: ProgramKind = recast.parse(queryContents!, {
+		parser: typeScriptParser,
+	}).program
+	// verify contents
+	expect(parsedQuery).toMatchInlineSnapshot(`
+		export default {
+		    name: "TestQuery",
+		    kind: "HoudiniQuery",
+		    hash: "267a8a091911d8570f70e9a2e6469663a635eb99ed0f8cf899464a3ad26d7688",
+
+		    raw: \`query TestQuery {
+		  friends {
+		    name
+		    __typename
+		  }
+		}
+		\`,
+
+		    rootType: "Query",
+
+		    selection: {
+		        friends: {
+		            type: "Friend",
+		            keyRaw: "friends",
+
+		            listInfo: {
+		                nullableElement: false
+		            },
+
+		            fields: {
+		                name: {
+		                    type: "String",
+		                    keyRaw: "name"
+		                },
+
+		                __typename: {
+		                    type: "String",
+		                    keyRaw: "__typename"
+		                }
+		            },
+
+		            abstract: true
+		        }
+		    },
+
+		    policy: "CacheOrNetwork",
+		    partial: false
+		};
+
+		"HoudiniHash=22ade17487acb1283338d063fd94207cad50ff8be9c021d8709f90cb2d7b23a9";
+	`)
+})
+
 describe('subscription artifacts', function () {
 	test('happy path', async function () {
 		const mutationDocs = [

@@ -146,6 +146,9 @@ export type SubscriptionSelection = {
 			connection: boolean
 			type: string
 		}
+		listInfo?: {
+			nullableElement: boolean
+		}
 		update?: RefetchUpdateMode
 		filters?: {
 			[key: string]: {

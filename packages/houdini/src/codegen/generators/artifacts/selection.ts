@@ -87,16 +87,32 @@ export default function selection({
 			}
 
 			const attributeName = field.alias?.value || field.name.value
+
 			// if we are looking at __typename, its a string (not defined in the schema)
 			let fieldType: graphql.GraphQLType
 			let nullable = false
+			let listInfo: SubscriptionSelection[string]['listInfo']
+
 			if (field.name.value === '__typename') {
 				fieldType = config.schema.getType('String')!
 			} else {
 				let typeRef = type.getFields()[field.name.value].type
 				fieldType = getRootType(typeRef)
 				nullable = !graphql.isNonNullType(typeRef)
+
+				// figure out if the element is a list
+				let target = typeRef
+				if (graphql.isNonNullType(typeRef)) {
+					target = typeRef.ofType
+				}
+				// if the type is a list then we just need to check if the contents are nullable
+				if (graphql.isListType(target)) {
+					listInfo = {
+						nullableElement: !graphql.isNonNullType(target.ofType),
+					}
+				}
 			}
+
 			const typeName = fieldType.toString()
 
 			// make sure we include the attribute in the path
@@ -106,6 +122,7 @@ export default function selection({
 			const fieldObj: SubscriptionSelection['field'] = {
 				type: typeName,
 				keyRaw: fieldKey(config, field),
+				listInfo,
 			}
 
 			if (nullable) {
