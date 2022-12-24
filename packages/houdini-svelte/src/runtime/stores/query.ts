@@ -261,7 +261,7 @@ This will result in duplicate queries. If you are trying to ensure there is alwa
 			policy: rawCacheOnlyResult ? CachePolicy.CacheOnly : policy,
 			context,
 		})
-		const { result, source, partial } = request
+		const { result, source, partial, hasStale } = request
 
 		// if we want only the raw CacheOnly result,
 		// return it directly
@@ -272,6 +272,7 @@ This will result in duplicate queries. If you are trying to ensure there is alwa
 		// we're done
 		setLoadPending(false)
 
+		// JYC TODO: TO CHECK => Shouldn't this be in houdini? (not Houdini-svelte)
 		if (result.data && source !== DataSource.Cache) {
 			// update the cache with the data that we just ran into
 			getCache().write({
@@ -312,12 +313,28 @@ This will result in duplicate queries. If you are trying to ensure there is alwa
 				variables: variables || ({} as _Input),
 				errors: null,
 				isFetching: false,
-				partial: request.partial,
-				source: request.source,
+				partial,
+				source,
+				hasStale,
 			})
 		}
 
+		// (JYC TODO: Shouldn't this be in Houdini?)
 		if (!ignoreFollowup) {
+			if (hasStale && artifact.policy === CachePolicy.CacheOrNetwork) {
+				this.fetchAndCache({
+					config,
+					context,
+					artifact,
+					variables,
+					store,
+					cached: false,
+					ignoreFollowup: true,
+					setLoadPending,
+					policy,
+				})
+			}
+
 			// if the data was loaded from a cached value, and the document cache policy wants a
 			// network request to be sent after the data was loaded, load the data
 			if (source === DataSource.Cache && artifact.policy === CachePolicy.CacheAndNetwork) {
@@ -383,6 +400,7 @@ This will result in duplicate queries. If you are trying to ensure there is alwa
 			errors: null,
 			isFetching: true,
 			partial: false,
+			hasStale: false,
 			source: null,
 			variables: {} as _Input,
 			...this.extraFields(),

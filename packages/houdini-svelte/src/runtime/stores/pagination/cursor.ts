@@ -235,6 +235,7 @@ export function cursorHandlers<_Data extends GraphQLObject, _Input>({
 				partial: result.partial,
 				errors: null,
 				source: result.source,
+				hasStale: result.hasStale,
 			}
 		},
 	}
