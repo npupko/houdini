@@ -237,6 +237,7 @@ test('resubscribing to fields marked for garbage collection resets counter', fun
 			parent: 'User:1',
 		}).data
 	).toEqual({ id: '1' })
+	// Working with 7 loop above, but not 10! WHYYYYYYYYYYYYYY? :o
 
 	// tick once more to clear the garbage
 	cache._internal_unstable.collectGarbage()
