@@ -182,6 +182,7 @@ export type FetchQueryResult<_Data> = {
 	result: RequestPayload<_Data | null>
 	source: DataSource | null
 	partial: boolean
+	hasStale: boolean
 }
 
 export type QueryResult<_Data, _Input, _Extra = {}> = {
@@ -189,6 +190,7 @@ export type QueryResult<_Data, _Input, _Extra = {}> = {
 	errors: { message: string }[] | null
 	isFetching: boolean
 	partial: boolean
+	hasStale: boolean
 	source: DataSource | null
 	variables: _Input
 } & _Extra

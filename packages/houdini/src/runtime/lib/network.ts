@@ -268,6 +268,7 @@ export async function fetchQuery<_Data extends GraphQLObject, _Input extends {}>
 					},
 					source: DataSource.Cache,
 					partial: value.partial,
+					hasStale: value.hasStale,
 				}
 			}
 
@@ -280,6 +281,7 @@ export async function fetchQuery<_Data extends GraphQLObject, _Input extends {}>
 					},
 					source: DataSource.Cache,
 					partial: false,
+					hasStale: value.hasStale,
 				}
 			}
 		}
@@ -304,5 +306,6 @@ export async function fetchQuery<_Data extends GraphQLObject, _Input extends {}>
 		result: result.body,
 		source: result.ssr ? DataSource.Ssr : DataSource.Network,
 		partial: false,
+		hasStale: false,
 	}
 }

@@ -1276,6 +1276,7 @@ test('null-value cascade from object value', function () {
 			},
 		})
 	).toEqual({
+		hasStale: false,
 		partial: true,
 		data: {
 			viewer: null,
@@ -1309,6 +1310,7 @@ test('null-value cascade from object value', function () {
 			},
 		})
 	).toEqual({
+		hasStale: false,
 		partial: true,
 		data: {
 			viewer: {
@@ -1373,8 +1375,9 @@ test('null-value cascade to root', function () {
 			},
 		})
 	).toEqual({
-		data: null,
+		hasStale: false,
 		partial: true,
+		data: null,
 	})
 
 	// read the data as if the nested value is not required (parent should be null)
@@ -1458,6 +1461,7 @@ test('must have a single value in order to use partial data', function () {
 			},
 		})
 	).toEqual({
+		hasStale: false,
 		partial: false,
 		data: null,
 	})
@@ -1487,6 +1491,7 @@ test('must have a single value in order to use partial data', function () {
 			},
 		})
 	).toEqual({
+		hasStale: false,
 		partial: true,
 		data: {
 			viewer: null,
@@ -1575,6 +1580,7 @@ test('reading an empty list counts as data', function () {
 			},
 		})
 	).toEqual({
+		hasStale: false,
 		partial: false,
 		data: {
 			viewer: {

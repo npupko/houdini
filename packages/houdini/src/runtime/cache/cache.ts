@@ -6,6 +6,7 @@ import { GraphQLObject, GraphQLValue, SubscriptionSelection, SubscriptionSpec } 
 import { GarbageCollector } from './gc'
 import { ListCollection, ListManager } from './lists'
 import { SchemaManager } from './schema'
+import { StaleManager } from './staleManager'
 import { InMemoryStorage, Layer, LayerID } from './storage'
 import { evaluateKey, flattenList } from './stuff'
 import { InMemorySubscriptions } from './subscription'
@@ -23,6 +24,7 @@ export class Cache {
 			subscriptions: new InMemorySubscriptions(this),
 			lists: new ListManager(this, rootID),
 			lifetimes: new GarbageCollector(this),
+			staleManager: new StaleManager(this),
 			schema: new SchemaManager(this),
 		})
 
@@ -79,15 +81,16 @@ export class Cache {
 
 	// reconstruct an object with the fields/relations specified by a selection
 	read(...args: Parameters<CacheInternal['getSelection']>) {
-		const { data, partial, hasData } = this._internal_unstable.getSelection(...args)
+		const { data, partial, hasData, hasStale } = this._internal_unstable.getSelection(...args)
 
 		if (!hasData) {
-			return { data: null, partial: false }
+			return { data: null, partial: false, hasStale: false }
 		}
 
 		return {
 			data,
 			partial,
+			hasStale,
 		}
 	}
 
@@ -163,6 +166,7 @@ class CacheInternal {
 	cache: Cache
 	lifetimes: GarbageCollector
 	schema: SchemaManager
+	staleManager: StaleManager
 
 	constructor({
 		storage,
@@ -170,6 +174,7 @@ class CacheInternal {
 		lists,
 		cache,
 		lifetimes,
+		staleManager,
 		schema,
 	}: {
 		storage: InMemoryStorage
@@ -177,6 +182,7 @@ class CacheInternal {
 		lists: ListManager
 		cache: Cache
 		lifetimes: GarbageCollector
+		staleManager: StaleManager
 		schema: SchemaManager
 	}) {
 		this.storage = storage
@@ -184,6 +190,7 @@ class CacheInternal {
 		this.lists = lists
 		this.cache = cache
 		this.lifetimes = lifetimes
+		this.staleManager = staleManager
 		this.schema = schema
 
 		// the cache should always be disabled on the server, unless we're testing
@@ -280,7 +287,8 @@ class CacheInternal {
 
 			// if we are writing to the display layer we need to refresh the lifetime of the value
 			if (displayLayer) {
-				this.lifetimes.resetLifetime(parent, key)
+				this.lifetimes.resetLifetime(linkedType, parent, key)
+				this.staleManager.setFieldTimeToNow(linkedType, parent, key)
 			}
 
 			// any scalar is defined as a field with no selection
@@ -685,10 +693,10 @@ class CacheInternal {
 		parent?: string
 		variables?: {}
 		stepsFromConnection?: number | null
-	}): { data: GraphQLObject | null; partial: boolean; hasData: boolean } {
+	}): { data: GraphQLObject | null; partial: boolean; hasData: boolean; hasStale: boolean } {
 		// we could be asking for values of null
 		if (parent === null) {
-			return { data: null, partial: false, hasData: true }
+			return { data: null, partial: false, hasData: true, hasStale: false }
 		}
 
 		const target = {} as GraphQLObject
@@ -701,6 +709,9 @@ class CacheInternal {
 		// if we get an empty value for a non-null field, we need to turn the whole object null
 		// that happens after we process every field to determine if its a partial null
 		let cascadeNull = false
+
+		// Check if we have at least one stale data
+		let hasStale = false
 
 		// if we have abstract fields, grab the __typename and include them in the list
 		const typename = this.storage.get(parent, '__typename').value as string
@@ -716,6 +727,12 @@ class CacheInternal {
 
 			// look up the value in our store
 			const { value } = this.storage.get(parent, key)
+
+			const dt_field = this.staleManager.getFieldTime(type, parent, key)
+			// If we have an explicite null, that mean that it's stale and the we should do a network call
+			if (dt_field === null) {
+				hasStale = true
+			}
 
 			// in order to avoid falsey identifying the `cursor` field of a connection edge
 			// as missing non-nullable data (and therefor cascading null to the response) we need to
@@ -819,6 +836,10 @@ class CacheInternal {
 				if (objectFields.hasData) {
 					hasData = true
 				}
+
+				if (objectFields.hasStale) {
+					hasStale = true
+				}
 			}
 
 			// regardless of how the field was processed, if we got a null value assigned
@@ -834,6 +855,7 @@ class CacheInternal {
 			// has a full value
 			partial: hasData && partial,
 			hasData,
+			hasStale,
 		}
 	}
 
@@ -875,13 +897,14 @@ class CacheInternal {
 		variables?: {}
 		linkedList: LinkedList
 		stepsFromConnection: number | null
-	}): { data: LinkedList<GraphQLValue>; partial: boolean; hasData: boolean } {
+	}): { data: LinkedList<GraphQLValue>; partial: boolean; hasData: boolean; hasStale: boolean } {
 		// the linked list could be a deeply nested thing, we need to call getData for each record
 		// we can't mutate the lists because that would change the id references in the listLinks map
 		// to the corresponding record. can't have that now, can we?
 		const result: LinkedList<GraphQLValue> = []
 		let partialData = false
 		let hasValues = false
+		let hasStaleData = false
 
 		for (const entry of linkedList) {
 			// if the entry is an array, keep going
@@ -906,7 +929,7 @@ class CacheInternal {
 			}
 
 			// look up the data for the record
-			const { data, partial, hasData } = this.getSelection({
+			const { data, partial, hasData, hasStale } = this.getSelection({
 				parent: entry,
 				selection: fields,
 				variables,
@@ -922,12 +945,17 @@ class CacheInternal {
 			if (hasData) {
 				hasValues = true
 			}
+
+			if (hasStale) {
+				hasStaleData = true
+			}
 		}
 
 		return {
 			data: result,
 			partial: partialData,
 			hasData: hasValues,
+			hasStale: hasStaleData,
 		}
 	}
 
