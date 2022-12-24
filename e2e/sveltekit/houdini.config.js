@@ -3,6 +3,7 @@
 
 /** @type {import('houdini').ConfigFile} */
 const config = {
+  acceptImperativeInstability: true,
   schemaPath: '../_api/*.graphql',
   defaultCachePolicy: 'CacheOrNetwork',
   defaultPartial: true,
