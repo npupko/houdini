@@ -1,4 +1,4 @@
-import { ArtifactKind, GraphQLObject } from '../../lib'
+import type { ArtifactKind } from '../../lib/types'
 import { ClientPlugin, ClientPluginPhase } from '../documentObserver'
 
 export const documentPlugin = (kind: ArtifactKind, source: ClientPlugin): ClientPlugin => {
@@ -11,30 +11,31 @@ export const documentPlugin = (kind: ArtifactKind, source: ClientPlugin): Client
 			!sourceHook
 				? {}
 				: {
-						enter(ctx, handlers) {
-							if (ctx.artifact.kind !== kind || !sourceHook.enter) {
-								return handlers.next(ctx)
-							}
-							return sourceHook.enter(ctx, handlers)
-						},
-						exit(ctx, handlers) {
-							if (ctx.artifact.kind !== kind || !sourceHook.exit) {
-								return handlers.resolve(ctx)
-							}
-							return sourceHook.exit(ctx, handlers)
-						},
+						enter: !sourceHook.enter
+							? undefined
+							: (ctx, handlers) => {
+									if (ctx.artifact.kind !== kind) {
+										return handlers.next(ctx)
+									}
+									return sourceHook.enter!(ctx, handlers)
+							  },
+						exit: !sourceHook.exit
+							? undefined
+							: (ctx, handlers) => {
+									if (ctx.artifact.kind !== kind) {
+										return handlers.resolve(ctx)
+									}
+									return sourceHook.exit!(ctx, handlers)
+							  },
 				  }
 
 		// return the modified hooks
 		return {
 			setup: wrap(sourceHandlers.setup),
 			network: wrap(sourceHandlers.network),
-			throw: (ctx, handlers) => {
-				if (ctx.artifact.kind !== kind || !sourceHandlers.throw) {
-					return handlers.next(ctx)
-				}
-				return sourceHandlers.throw(ctx, handlers)
-			},
+			throw: sourceHandlers.throw
+				? (ctx, handlers) => sourceHandlers.throw!(ctx, handlers)
+				: undefined,
 			cleanup: () => sourceHandlers.cleanup?.(),
 		}
 	}
