@@ -39,7 +39,7 @@ export const cachePolicyPlugin =
 							// if the policy is cacheOnly and we got this far, we need to return null (no network request will be sent)
 							if (policy === CachePolicy.CacheOnly) {
 								return resolve(ctx, {
-									data: null,
+									data: value.data,
 									errors: [],
 									fetching: false,
 									variables: ctx.variables ?? null,
@@ -84,8 +84,14 @@ export const cachePolicyPlugin =
 				},
 				exit(ctx, { resolve, value, marshalVariables }) {
 					// if we have data coming in from the cache, we should write it and mvoe on
-					if (enabled && value.data && !ctx.cacheParams?.disableWrite) {
+					if (
+						enabled &&
+						value.data &&
+						!ctx.cacheParams?.disableWrite &&
+						value.source !== DataSource.Cache
+					) {
 						// write the result of the mutation to the cache
+						console.log(`writing`, value.data, value.source)
 						localCache.write({
 							...ctx.cacheParams,
 							layer: ctx.cacheParams?.layer?.id,
@@ -93,6 +99,10 @@ export const cachePolicyPlugin =
 							data: value.data,
 							variables: marshalVariables(ctx),
 						})
+						console.log(
+							`localCache._internal_unstable.storage.topLayer`,
+							localCache._internal_unstable.storage.topLayer
+						)
 					}
 
 					// we're done. don't change the result value

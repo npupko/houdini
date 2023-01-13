@@ -34,12 +34,14 @@ export class DocumentObserver<
 	constructor({
 		artifact,
 		plugins,
+		pipeline,
 		client,
 		cache = true,
 		initialValue,
 	}: {
 		artifact: DocumentArtifact
 		plugins: ClientPlugin[]
+		pipeline: ClientPlugin[]
 		client: HoudiniClient
 		cache?: boolean
 		initialValue?: _Data | null
@@ -68,12 +70,25 @@ export class DocumentObserver<
 		this.#lastVariables = null
 		this.#configFile = getCurrentConfig()
 
-		this.#plugins = [
-			// cache policy needs to always come first so that it can be the first fetch_enter to fire
-			cachePolicyPlugin(cache, (fetching: boolean) =>
-				this.update((state) => ({ ...state, fetching }))
-			)(),
-		].concat(plugins.map((factory) => factory()))
+		// this.#plugins =[...pipeline, ...plugins.map((factory) => factory())]
+
+		// this.#plugins = [
+		// 	// cache policy needs to always come first so that it can be the first fetch_enter to fire
+		// 	cachePolicyPlugin(cache, (fetching: boolean) =>
+		// 		this.update((state) => ({ ...state, fetching }))
+		// 	)(),
+		// ].concat(plugins.map((factory) => factory()))
+		console.log(`pipeline`, pipeline)
+
+		this.#plugins = (
+			pipeline ??
+			[
+				// cache policy needs to always come first so that it can be the first fetch_enter to fire
+				cachePolicyPlugin(cache, (fetching: boolean) =>
+					this.update((state) => ({ ...state, fetching }))
+				),
+			].concat(plugins)
+		).map((factory) => factory())
 	}
 
 	// used by the client to send a new set of variables to the pipeline

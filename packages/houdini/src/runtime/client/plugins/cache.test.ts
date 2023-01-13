@@ -225,4 +225,38 @@ test('0 network call, because cache only', async function () {
 			    "partial": false
 			}
 		`)
+	console.log('ret1')
+	const ret2 = await store.send({ policy: CachePolicy.CacheOrNetwork })
+	expect(ret2).toMatchInlineSnapshot(`
+		{
+		    "data": {
+		        "viewer": {
+		            "id": "1",
+		            "firstName": "bob"
+		        }
+		    },
+		    "errors": [],
+		    "fetching": false,
+		    "variables": null,
+		    "source": "network",
+		    "partial": false
+		}
+	`)
+	console.log('ret2')
+	const ret3 = await store.send({ policy: CachePolicy.CacheOnly })
+	expect(ret3).toMatchInlineSnapshot(`
+		{
+		    "data": {
+		        "viewer": {
+		            "id": "1",
+		            "firstName": "bob"
+		        }
+		    },
+		    "errors": [],
+		    "fetching": false,
+		    "variables": {},
+		    "source": "cache",
+		    "partial": false
+		}
+	`)
 })
