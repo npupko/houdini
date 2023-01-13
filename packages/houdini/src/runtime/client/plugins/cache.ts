@@ -1,14 +1,13 @@
 import cache from '../../cache'
-import { ArtifactKind, CachePolicy, DataSource } from '../../lib'
+import { ArtifactKind, CachePolicy, DataSource, GraphQLObject } from '../../lib'
 import { ClientPlugin } from '../documentObserver'
-import { marshaledVariables } from './inputs'
 
 export const cachePolicyPlugin =
 	(enabled: boolean, setFetching: (val: boolean) => void): ClientPlugin =>
 	() => {
 		return {
 			network: {
-				enter(ctx, { next, resolve }) {
+				enter(ctx, { next, resolve, marshalVariables }) {
 					const { policy, artifact } = ctx
 
 					// enforce cache policies for queries
@@ -23,7 +22,7 @@ export const cachePolicyPlugin =
 							// look up the current value in the cache
 							const value = cache.read({
 								selection: artifact.selection,
-								variables: marshaledVariables(ctx),
+								variables: marshalVariables(ctx),
 							})
 
 							// we can only use the result if its not a partial result
@@ -35,10 +34,10 @@ export const cachePolicyPlugin =
 							// if the policy is cacheOnly and we got this far, we need to return null (no network request will be sent)
 							if (policy === CachePolicy.CacheOnly) {
 								return resolve(ctx, {
-									result: {
-										data: null,
-										errors: [],
-									},
+									fetching: false,
+									variables: ctx.variables ?? null,
+									data: null,
+									errors: [],
 									source: DataSource.Cache,
 									partial: false,
 								})
@@ -48,10 +47,10 @@ export const cachePolicyPlugin =
 							const useCache = value.data !== null && allowed
 							if (useCache) {
 								resolve(ctx, {
-									result: {
-										data: value.data,
-										errors: [],
-									},
+									fetching: false,
+									variables: ctx.variables ?? null,
+									data: value.data,
+									errors: [],
 									source: DataSource.Cache,
 									partial: value.partial,
 								})
@@ -78,16 +77,16 @@ export const cachePolicyPlugin =
 					// move on
 					return next(ctx)
 				},
-				exit(ctx, { resolve, value }) {
+				exit(ctx, { resolve, value, marshalVariables }) {
 					// if we have data coming in from the cache, we should write it and mvoe on
-					if (enabled && value.result?.data && !ctx.cacheParams?.disableWrite) {
+					if (enabled && value.data && !ctx.cacheParams?.disableWrite) {
 						// write the result of the mutation to the cache
 						cache.write({
 							...ctx.cacheParams,
 							layer: ctx.cacheParams?.layer?.id,
 							selection: ctx.artifact.selection,
-							data: value.result.data,
-							variables: marshaledVariables(ctx),
+							data: value.data,
+							variables: marshalVariables(ctx),
 						})
 					}
 

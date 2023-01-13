@@ -184,20 +184,25 @@ export type FetchQueryResult<_Data> = {
 	partial: boolean
 }
 
-export type QueryResult<_Data, _Input, _Extra = {}> = {
+export type QueryResult<_Data = GraphQLObject, _Input = Record<string, any>> = {
 	data: _Data | null
 	errors: { message: string }[] | null
 	fetching: boolean
 	partial: boolean
 	source: DataSource | null
-	variables: _Input
-} & _Extra
+	variables: _Input | null
+}
 
-export type RequestPayload<_Data = any> = {
-	data: _Data | null
+export type RequestPayload<GraphQLObject = any> = {
+	data: GraphQLObject | null
 	errors:
 		| {
 				message: string
 		  }[]
 		| null
+}
+
+export declare namespace App {
+	interface Session {}
+	interface Metadata {}
 }

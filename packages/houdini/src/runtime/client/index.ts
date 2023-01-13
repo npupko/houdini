@@ -1,7 +1,6 @@
 /// <reference path="../../../../../houdini.d.ts" />
 import { GraphQLObject, DocumentArtifact } from '../lib/types'
 import { ClientPlugin, DocumentObserver } from './documentObserver'
-import pluginsFromPlugins from './injectedPlugins'
 import {
 	queryPlugin,
 	mutationPlugin,
@@ -9,9 +8,11 @@ import {
 	fetchParamsPlugin,
 	type FetchParamFn,
 } from './plugins'
+import pluginsFromPlugins from './plugins/injectedPlugins'
 
 // export the plugin constructors
 export { queryPlugin, mutationPlugin, fetchPlugin, subscriptionPlugin } from './plugins'
+export { DocumentObserver } from './documentObserver'
 
 type ConstructorArgs = {
 	url: string
@@ -49,7 +50,7 @@ export class HoudiniClient {
 
 		// a few middlewares _have_ to run to setup the pipeline
 		this.#plugins = ([] as ClientPlugin[]).concat(
-			fetchParams ? [fetchParamsPlugin(fetchParams)] : [],
+			[fetchParamsPlugin(fetchParams)],
 			// if the user wants to specify the entire pipeline, let them do so
 			pipeline?.() ??
 				// the user doesn't have a specific pipeline so we should just add their desired plugins
@@ -72,13 +73,21 @@ export class HoudiniClient {
 		this.url = url
 	}
 
-	observe({
+	observe<_Data extends GraphQLObject, _Input extends Record<string, any>>({
 		artifact,
 		cache = true,
+		initialValue,
 	}: {
 		artifact: DocumentArtifact
 		cache?: boolean
-	}): DocumentObserver<GraphQLObject, {}> {
-		return new DocumentObserver({ client: this, artifact, plugins: this.#plugins, cache })
+		initialValue?: _Data | null
+	}): DocumentObserver<_Data, _Input> {
+		return new DocumentObserver({
+			client: this,
+			artifact,
+			plugins: this.#plugins,
+			cache,
+			initialValue,
+		})
 	}
 }

@@ -3,10 +3,12 @@ import { test, expect, vi, beforeEach } from 'vitest'
 
 import { HoudiniClient } from '.'
 import { setMockConfig } from '../lib/config'
-import { ArtifactKind } from '../lib/types'
-import { DocumentObserver, ClientPlugin, marshaledVariables } from './documentObserver'
+import { ArtifactKind, DataSource, GraphQLObject } from '../lib/types'
+import { DocumentObserver, ClientPlugin } from './documentObserver'
 
-function createStore(plugins: ClientPlugin[]): DocumentObserver<any, any> {
+function createStore(
+	plugins: ClientPlugin[]
+): DocumentObserver<GraphQLObject, Record<string, any>> {
 	return new HoudiniClient({
 		url: 'URL',
 		pipeline() {
@@ -110,7 +112,14 @@ test('middleware pipeline happy path', async function () {
 		network: {
 			enter(ctx, { resolve }) {
 				tracker(3, 'two_enter')
-				resolve(ctx, { result: { data: 'value', errors: [] } })
+				resolve(ctx, {
+					data: { hello: 'world' },
+					errors: [],
+					fetching: false,
+					partial: false,
+					source: DataSource.Cache,
+					variables: null,
+				})
 			},
 			exit(ctx, { resolve }) {
 				tracker(3, 'two_exit')
@@ -144,7 +153,14 @@ test('middleware pipeline happy path', async function () {
 	])
 
 	// make sure we got the right value back
-	expect(value).toEqual({ result: { data: 'value', errors: [] } })
+	expect(value).toEqual({
+		fetching: false,
+		variables: null,
+		data: { hello: 'world' },
+		errors: [],
+		partial: false,
+		source: DataSource.Cache,
+	})
 })
 
 test('terminate short-circuits pipeline', async function () {
@@ -176,11 +192,25 @@ test('terminate short-circuits pipeline', async function () {
 			setup: {
 				enter(ctx, { resolve }) {
 					tracker(2, 'one_enter')
-					resolve(ctx, { result: { data: 'value', errors: [] } })
+					resolve(ctx, {
+						data: { hello: 'world' },
+						errors: [],
+						fetching: false,
+						partial: false,
+						source: DataSource.Cache,
+						variables: null,
+					})
 				},
 				exit(ctx, { resolve }) {
 					tracker(2, 'one_exit')
-					resolve(ctx, { result: { data: 'value', errors: [] } })
+					resolve(ctx, {
+						data: { hello: 'world' },
+						errors: [],
+						fetching: false,
+						partial: false,
+						source: DataSource.Cache,
+						variables: null,
+					})
 				},
 			},
 			network: {
@@ -215,9 +245,23 @@ test('can call resolve multiple times to set multiple values', async function ()
 	const middleware: ClientPlugin = () => ({
 		network: {
 			enter(ctx, { resolve }) {
-				resolve(ctx, { result: { data: 'value', errors: [] } })
+				resolve(ctx, {
+					data: { hello: 'world' },
+					errors: [],
+					fetching: false,
+					partial: false,
+					source: DataSource.Cache,
+					variables: null,
+				})
 				sleep(100).then(() =>
-					resolve(ctx, { result: { data: 'another-value', errors: [] } })
+					resolve(ctx, {
+						data: { hello: 'another-world' },
+						errors: [],
+						fetching: false,
+						partial: false,
+						source: DataSource.Cache,
+						variables: null,
+					})
 				)
 			},
 		},
@@ -234,92 +278,44 @@ test('can call resolve multiple times to set multiple values', async function ()
 	await sleep(100)
 
 	// make sure we get the first value  from the promise
-	expect(result).toEqual({ result: { data: 'value', errors: [] } })
+	expect(result).toEqual({
+		fetching: false,
+		variables: null,
+		data: { hello: 'world' },
+		errors: [],
+		partial: false,
+		source: DataSource.Cache,
+	})
 	// that value will be the second value to the spy
 	expect(fn).toHaveBeenNthCalledWith(2, {
 		fetching: true,
 		partial: false,
 		source: null,
-		result: {
-			data: null,
-			errors: [],
-		},
-		variables: {},
+
+		data: null,
+		errors: [],
+
+		variables: null,
 	})
 	// and the third call will be the second call to terminate
 	expect(fn).toHaveBeenNthCalledWith(3, {
 		fetching: false,
 		partial: false,
-		result: {
-			data: 'value',
-			errors: [],
-		},
-		source: null,
-		variables: {},
+
+		data: { hello: 'world' },
+		errors: [],
+		source: DataSource.Cache,
+		variables: null,
 	})
 	expect(fn).toHaveBeenNthCalledWith(4, {
 		fetching: false,
 		partial: false,
-		result: {
-			data: 'another-value',
-			errors: [],
-		},
-		source: null,
-		variables: {},
+
+		data: { hello: 'another-world' },
+		errors: [],
+		source: DataSource.Cache,
+		variables: null,
 	})
-})
-
-test('error can replay chain', async function () {
-	let count = 0
-
-	// we want to make sure that the errors dont bubble up beyond the middleware that
-	// traps it
-	const outerSpy = vi.fn()
-	const spy = vi.fn()
-
-	const firstErrorHandler: ClientPlugin = () => ({
-		error(ctx) {
-			outerSpy()
-		},
-	})
-
-	const errorTrapper: ClientPlugin = () => ({
-		error(ctx, { next, error }) {
-			// invoke the spy (we got here once)
-			spy(error)
-
-			// try again but this time, succeed
-			count++
-			next(ctx)
-		},
-	})
-
-	const middleware: ClientPlugin = () => ({
-		setup: {
-			enter(ctx, { resolve }) {
-				// we have to get here twice to succeed
-				if (count) {
-					resolve(ctx, { result: { data: 'value', errors: [] } })
-					return
-				}
-
-				throw 'hello'
-			},
-		},
-	})
-
-	// create the client with the middlewares
-	const store = createStore([firstErrorHandler, errorTrapper, middleware])
-
-	// make sure that the promise rejected with the error value
-	await expect(store.send()).resolves.toEqual({
-		result: {
-			data: 'value',
-			errors: [],
-		},
-	})
-	expect(spy).toHaveBeenCalled()
-	expect(outerSpy).not.toHaveBeenCalled()
 })
 
 test('error rejects the promise', async function () {
@@ -393,7 +389,14 @@ test('middlewares can set fetch params', async function () {
 		setup: {
 			enter(ctx, { resolve }) {
 				spy(ctx.fetchParams)
-				resolve(ctx, { result: { data: 'value', errors: [] } })
+				resolve(ctx, {
+					data: { hello: 'world' },
+					errors: [],
+					fetching: false,
+					partial: false,
+					source: DataSource.Cache,
+					variables: null,
+				})
 			},
 		},
 	})
@@ -411,7 +414,14 @@ test('tracks loading state', async function () {
 	const middleware: ClientPlugin = () => ({
 		network: {
 			enter(ctx, { resolve }) {
-				resolve(ctx, { result: { data: 'value', errors: [] } })
+				resolve(ctx, {
+					data: { hello: 'world' },
+					errors: [],
+					fetching: false,
+					partial: false,
+					source: DataSource.Cache,
+					variables: null,
+				})
 			},
 		},
 	})
@@ -430,22 +440,20 @@ test('tracks loading state', async function () {
 		fetching: true,
 		partial: false,
 		source: null,
-		result: {
-			data: null,
-			errors: [],
-		},
-		variables: {},
+
+		data: null,
+		errors: [],
+		variables: null,
 	})
 	// make sure we're not
 	expect(spy).toHaveBeenNthCalledWith(3, {
 		fetching: false,
 		partial: false,
-		source: null,
-		result: {
-			data: 'value',
-			errors: [],
-		},
-		variables: {},
+		source: DataSource.Cache,
+
+		data: { hello: 'world' },
+		errors: [],
+		variables: null,
 	})
 })
 
@@ -455,15 +463,17 @@ test('exit can replay a pipeline', async function () {
 	const replayPlugin: ClientPlugin = () => ({
 		setup: {
 			exit(ctx, { value, next, resolve }) {
-				if (value.result?.data === 'value') {
+				if (value.data?.hello === 'world') {
 					count++
 					next(ctx)
 				} else {
 					resolve(ctx, {
-						result: {
-							data: 'another-value',
-							errors: [],
-						},
+						data: { hello: 'another-value' },
+						errors: [],
+						fetching: false,
+						partial: false,
+						source: DataSource.Cache,
+						variables: null,
 					})
 				}
 			},
@@ -475,11 +485,25 @@ test('exit can replay a pipeline', async function () {
 			enter(ctx, { resolve }) {
 				// we have to get here twice to succeed
 				if (count) {
-					resolve(ctx, { result: { data: 'another-value', errors: [] } })
+					resolve(ctx, {
+						data: { hello: 'another-value' },
+						errors: [],
+						fetching: false,
+						partial: false,
+						source: DataSource.Cache,
+						variables: null,
+					})
 					return
 				}
 
-				resolve(ctx, { result: { data: 'value', errors: [] } })
+				resolve(ctx, {
+					data: { hello: 'world' },
+					errors: [],
+					fetching: false,
+					partial: false,
+					source: DataSource.Cache,
+					variables: null,
+				})
 			},
 		},
 	})
@@ -489,10 +513,13 @@ test('exit can replay a pipeline', async function () {
 
 	// make sure that the promise rejected with the error value
 	await expect(store.send()).resolves.toEqual({
-		result: {
-			data: 'another-value',
-			errors: [],
-		},
+		fetching: false,
+		variables: null,
+
+		data: { hello: 'another-value' },
+		partial: false,
+		source: DataSource.Cache,
+		errors: [],
 	})
 })
 
@@ -525,9 +552,16 @@ test('plugins can update variables', async function () {
 	const checkVariables: ClientPlugin = () => {
 		return {
 			network: {
-				enter(ctx, { resolve }) {
-					spy(marshaledVariables(ctx))
-					resolve(ctx, {})
+				enter(ctx, { resolve, marshalVariables }) {
+					spy(marshalVariables(ctx))
+					resolve(ctx, {
+						data: { hello: 'world' },
+						errors: [],
+						fetching: false,
+						partial: false,
+						source: DataSource.Cache,
+						variables: null,
+					})
 				},
 			},
 		}
@@ -545,4 +579,166 @@ test('plugins can update variables', async function () {
 		date1: date1.getTime(),
 		date2: date2.getTime(),
 	})
+})
+
+test('can detect changed variables from inputs', async function () {
+	// a spy to track changes
+	const spy = vi.fn()
+
+	// a plugin to detect changes
+	const changePlugin: ClientPlugin = () => {
+		return {
+			setup: {
+				enter(ctx, { next, variablesChanged }) {
+					spy(variablesChanged(ctx))
+					next(ctx)
+				},
+			},
+			network: {
+				enter(ctx, { resolve }) {
+					resolve(ctx, {
+						data: { hello: 'world' },
+						errors: [],
+						fetching: false,
+						partial: false,
+						source: DataSource.Cache,
+						variables: null,
+					})
+				},
+			},
+		}
+	}
+
+	// instantiate a store we'll perform multiple queries with
+	const store = createStore([changePlugin])
+
+	// send one set of variables
+	await store.send()
+	expect(spy).toHaveBeenNthCalledWith(1, true)
+
+	// send another empty set of variables
+	await store.send()
+	expect(spy).toHaveBeenNthCalledWith(2, false)
+
+	// send with a known set
+	await store.send({ variables: { hello: 'world' } })
+	expect(spy).toHaveBeenNthCalledWith(3, true)
+
+	// send with the same est
+	await store.send({ variables: { hello: 'world' } })
+	expect(spy).toHaveBeenNthCalledWith(4, false)
+})
+
+test('can update variables and then check if they were updated', async function () {
+	// a spy to track changes
+	const spy = vi.fn()
+
+	// a plugin to detect changes
+	const changePlugin: ClientPlugin = () => {
+		return {
+			setup: {
+				enter(ctx, { next, variablesChanged }) {
+					ctx.variables = {
+						...ctx.variables,
+						count: 0,
+					}
+					spy(variablesChanged(ctx))
+					next(ctx)
+				},
+			},
+			network: {
+				enter(ctx, { resolve }) {
+					resolve(ctx, {
+						data: { hello: 'world' },
+						errors: [],
+						fetching: false,
+						partial: false,
+						source: DataSource.Cache,
+						variables: null,
+					})
+				},
+			},
+		}
+	}
+
+	// instantiate a store we'll perform multiple queries with
+	const store = createStore([changePlugin])
+
+	// send one set of variables
+	await store.send()
+	expect(spy).toHaveBeenNthCalledWith(1, true)
+
+	// send another empty set of variables
+	await store.send()
+	expect(spy).toHaveBeenNthCalledWith(2, false)
+
+	// send with a known set
+	await store.send({ variables: { hello: 'world' } })
+	expect(spy).toHaveBeenNthCalledWith(3, true)
+})
+
+test('multiple new variables from inside plugin', async function () {
+	// a spy to track changes
+	const spy = vi.fn()
+
+	let count = 0
+
+	// a plugin to detect changes
+	const changePlugin: ClientPlugin = () => {
+		return {
+			setup: {
+				enter(ctx, { next, variablesChanged }) {
+					let oldCount = count
+					if (count === 0) {
+						count++
+					}
+					ctx.variables = {
+						...ctx.variables,
+						count: oldCount,
+					}
+					spy(variablesChanged(ctx), oldCount)
+					next(ctx)
+				},
+			},
+			network: {
+				enter(ctx, { resolve }) {
+					resolve(ctx, {
+						data: { hello: 'world' },
+						errors: [],
+						fetching: false,
+						partial: false,
+						source: DataSource.Cache,
+						variables: null,
+					})
+				},
+			},
+		}
+	}
+
+	// instantiate a store we'll perform multiple queries with
+	const store = createStore([changePlugin])
+
+	// send one set of variables
+	await store.send()
+	expect(spy).toHaveBeenNthCalledWith(1, true, 0)
+
+	// send another empty set of variables, count gets incremented
+	await store.send()
+	expect(spy).toHaveBeenNthCalledWith(2, true, 1)
+
+	// send another empty set of variables, count won't get incremented
+	await store.send()
+	expect(spy).toHaveBeenNthCalledWith(3, false, 1)
+
+	// send with a known set (count won't get incremented)
+	await store.send()
+	expect(spy).toHaveBeenNthCalledWith(4, false, 1)
+
+	// if we do send with a payload, make sure we know its changed
+	await store.send({ variables: { hello: 'world' } })
+	expect(spy).toHaveBeenNthCalledWith(5, true, 1)
+
+	// if we do send with a payload, send the same value for good measure
+	await store.send({ variables: { hello: 'world' } })
+	expect(spy).toHaveBeenNthCalledWith(6, false, 1)
 })

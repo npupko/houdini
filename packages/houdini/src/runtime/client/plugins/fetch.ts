@@ -1,12 +1,11 @@
-import { DataSource, RequestPayload } from '../../lib'
+import { DataSource, RequestPayload, App } from '../../lib'
 import type { ClientPlugin } from '../documentObserver'
-import { marshaledVariables } from './inputs'
 
 export const fetchPlugin = (fn?: RequestHandler | string): ClientPlugin => {
 	return () => {
 		return {
 			network: {
-				async enter(ctx, { client, resolve }) {
+				async enter(ctx, { client, resolve, marshalVariables }) {
 					// figure out which fetch to use
 					const fetch = ctx.fetch ?? globalThis.fetch
 
@@ -14,7 +13,7 @@ export const fetchPlugin = (fn?: RequestHandler | string): ClientPlugin => {
 					const fetchParams: FetchParams = {
 						text: ctx.artifact.raw,
 						hash: ctx.artifact.hash,
-						variables: marshaledVariables(ctx),
+						variables: marshalVariables(ctx),
 					}
 
 					let fetchFn = defaultFetch(client.url)
@@ -53,7 +52,10 @@ export const fetchPlugin = (fn?: RequestHandler | string): ClientPlugin => {
 
 					// return the result
 					resolve(ctx, {
-						result,
+						fetching: false,
+						variables: ctx.variables ?? null,
+						data: result.data,
+						errors: result.errors,
 						partial: false,
 						source: DataSource.Network,
 					})

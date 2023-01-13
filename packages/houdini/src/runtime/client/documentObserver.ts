@@ -6,24 +6,25 @@ import {
 	ConfigFile,
 	deepEquals,
 	DocumentArtifact,
-	FetchQueryResult,
+	QueryResult,
 	getCurrentConfig,
 	GraphQLObject,
 	marshalInputs,
 	QueryArtifact,
 	SubscriptionSpec,
+	unmarshalSelection,
+	App,
 } from '../lib'
 import { Writable } from '../lib/store'
 import { cachePolicyPlugin } from './plugins'
 
-type NetworkResult<_Data> = FetchQueryResult<_Data> & { fetching: boolean; variables: {} }
-
-export class DocumentObserver<_Data extends GraphQLObject, _Input extends {}> extends Writable<
-	NetworkResult<_Data>
-> {
+export class DocumentObserver<
+	_Data extends GraphQLObject,
+	_Input extends Record<string, any>
+> extends Writable<QueryResult<_Data, _Input>> {
 	#artifact: DocumentArtifact
 	#client: HoudiniClient
-	#configFile: ConfigFile | null = null
+	#configFile: ConfigFile
 
 	// the list of instantiated plugins
 	#plugins: ReturnType<ClientPlugin>[]
@@ -37,19 +38,22 @@ export class DocumentObserver<_Data extends GraphQLObject, _Input extends {}> ex
 		plugins,
 		client,
 		cache = true,
+		initialValue,
 	}: {
 		artifact: DocumentArtifact
 		plugins: ClientPlugin[]
 		client: HoudiniClient
 		cache?: boolean
+		initialValue?: _Data | null
 	}) {
 		// the initial store state
-		const initialState = {
-			result: { data: null, errors: [] },
+		const initialState: QueryResult<_Data, _Input> = {
+			data: initialValue ?? null,
+			errors: [],
 			partial: false,
 			source: null,
 			fetching: false,
-			variables: {},
+			variables: null,
 		}
 
 		super(initialState, () => {
@@ -64,6 +68,7 @@ export class DocumentObserver<_Data extends GraphQLObject, _Input extends {}> ex
 		this.#artifact = artifact
 		this.#client = client
 		this.#lastVariables = null
+		this.#configFile = getCurrentConfig()
 
 		this.#plugins = [
 			// cache policy needs to always come first so that it can be the first fetch_enter to fire
@@ -75,27 +80,22 @@ export class DocumentObserver<_Data extends GraphQLObject, _Input extends {}> ex
 
 	// used by the client to send a new set of variables to the pipeline
 	async send({
-		variables,
 		metadata,
 		session,
 		fetch = globalThis.fetch,
+		variables,
 		policy,
 		stuff,
 	}: {
-		variables?: _Input
-		metadata?: {}
+		variables?: Record<string, any> | null
+		metadata?: App.Metadata | null
 		fetch?: Fetch
-		session?: App.Session
+		session?: App.Session | null
 		policy?: CachePolicy
 		stuff?: {}
-	} = {}): Promise<_Data | null> {
-		// if we dont have the config file yet, load it
-		if (!this.#configFile) {
-			this.#configFile = await getCurrentConfig()
-		}
-
+	} = {}): Promise<QueryResult<_Data, _Input>> {
 		// start off with the initial context
-		const context = {
+		let context = new ClientPluginContextWrapper({
 			config: this.#configFile!,
 			policy: policy ?? (this.#artifact as QueryArtifact).policy,
 			variables: {},
@@ -104,9 +104,16 @@ export class DocumentObserver<_Data extends GraphQLObject, _Input extends {}> ex
 			fetch,
 			stuff: stuff ?? {},
 			artifact: this.#artifact,
-		}
+			lastVariables: this.#lastVariables,
+		})
 
-		return await new Promise((resolve, reject) => {
+		// assign variables to take advantage of the setter on variables
+		const draft = context.draft()
+		draft.variables = variables ?? {}
+		context = context.apply(draft)
+
+		// walk through the plugins to get the first result
+		const result = await new Promise<QueryResult<_Data, _Input>>((resolve, reject) => {
 			// the initial state of the iterator
 			const state: IteratorState = {
 				value: null,
@@ -119,15 +126,31 @@ export class DocumentObserver<_Data extends GraphQLObject, _Input extends {}> ex
 					reject,
 				},
 				// patch the context with new variables
-				context: this.#patchContext(context, {
-					...context,
-					variables,
-				}),
+				context,
 			}
 
 			// start walking down the chain
 			this.#next(state)
 		})
+
+		// if there are errors, we might need to throw
+		if (result.errors && result.errors.length > 0 && this.#configFile.quietErrors) {
+			// convert the artifact kind into the matching error pattern
+			const whichKind = {
+				[ArtifactKind.Mutation]: 'mutation',
+				[ArtifactKind.Query]: 'query',
+				[ArtifactKind.Fragment]: 'fragment',
+				[ArtifactKind.Subscription]: 'subscription',
+			}[this.#artifact.kind]
+
+			// we're only going to throw if we're not quieting the error
+			if (!(this.#configFile.quietErrors as string[]).includes(whichKind)) {
+				throw result.errors
+			}
+		}
+
+		// we're done
+		return result
 	}
 
 	#next(ctx: IteratorState): void {
@@ -137,36 +160,36 @@ export class DocumentObserver<_Data extends GraphQLObject, _Input extends {}> ex
 			if (target) {
 				try {
 					// invoke the target
-					const result = target(
-						{ ...ctx.context },
-						{
-							client: this.#client,
-							next: (newContext) => {
-								this.#next({
+					const result = target(ctx.context.draft(), {
+						initialValue: this.state,
+						client: this.#client,
+						variablesChanged,
+						marshalVariables,
+						next: (newContext) => {
+							this.#next({
+								...ctx,
+								context: ctx.context.apply(newContext),
+								index,
+							})
+						},
+						resolve: (newContext, value) => {
+							// start the journey back
+							this.#terminate(
+								{
 									...ctx,
-									context: this.#patchContext(ctx.context, newContext),
-									index,
-								})
-							},
-							resolve: (newContext, value) => {
-								// start the journey back
-								this.#terminate(
-									{
-										...ctx,
-										context: this.#patchContext(ctx.context, newContext),
-										// increment the index so that terminate looks at this link again
-										index: index + 1,
-										// save this value
-										value,
-										// increment the index so that terminate looks at this link again
-										// when we flip phases, we need to start from here
-										terminatingIndex: index + 1,
-									},
-									value
-								)
-							},
-						}
-					)
+									context: ctx.context.apply(newContext),
+									// increment the index so that terminate looks at this link again
+									index: index + 1,
+									// save this value
+									value,
+									// increment the index so that terminate looks at this link again
+									// when we flip phases, we need to start from here
+									terminatingIndex: index + 1,
+								},
+								value
+							)
+						},
+					})
 					result?.catch((err) => {
 						this.#error({ ...ctx, index }, err)
 					})
@@ -195,7 +218,7 @@ export class DocumentObserver<_Data extends GraphQLObject, _Input extends {}> ex
 		)
 	}
 
-	#terminate(ctx: IteratorState, value: Partial<NetworkResult<_Data>>): void {
+	#terminate(ctx: IteratorState, value: QueryResult): void {
 		// starting one less than the current index
 		for (let index = ctx.index - 1; index >= 0; index--) {
 			// if we find a plugin in the same phase, call it
@@ -203,40 +226,37 @@ export class DocumentObserver<_Data extends GraphQLObject, _Input extends {}> ex
 			if (target) {
 				try {
 					// invoke the target
-					const result = target(
-						{
-							...ctx.context,
-							value,
+					const result = target(ctx.context.draft(), {
+						initialValue: this.state,
+						value,
+						client: this.#client,
+						variablesChanged,
+						marshalVariables,
+						next: (newContext) => {
+							// push the ctx onto the next step
+							this.#next({
+								...ctx,
+								index: index - 1,
+								currentStep: 'setup',
+								context: ctx.context.apply(newContext),
+							})
 						},
-						{
-							client: this.#client,
-							value,
-							next: (newContext) => {
-								// push the ctx onto the next step
-								this.#next({
-									...ctx,
-									index: index - 1,
-									currentStep: 'setup',
-									context: this.#patchContext(ctx.context, newContext),
-								})
-							},
-							resolve: (context, val) => {
-								// if we were given a value, use it. otherwise use the previous value
-								const newValue = typeof val !== 'undefined' ? val : ctx.value
+						resolve: (context, val) => {
+							// if we were given a value, use it. otherwise use the previous value
+							const newValue = typeof val !== 'undefined' ? val : ctx.value
 
-								// be brave. take the next step.
-								this.#terminate(
-									{
-										...ctx,
-										...context,
-										value: newValue,
-										index,
-									},
-									newValue
-								)
-							},
-						}
-					)
+							// be brave. take the next step.
+							this.#terminate(
+								{
+									...ctx,
+									context: ctx.context.apply(context),
+									value: newValue,
+									index,
+								},
+								newValue
+							)
+						},
+					})
 					result?.catch((err) => {
 						this.#error({ ...ctx, index }, err)
 					})
@@ -261,20 +281,33 @@ export class DocumentObserver<_Data extends GraphQLObject, _Input extends {}> ex
 
 		// we're done with the chain
 
+		// convert the raw value into something we can give to the user
+		let data = value.data
+		try {
+			data =
+				unmarshalSelection(this.#configFile!, this.#artifact.selection, value.data) ?? null
+		} catch {}
+
+		// build up the final state
+		const finalValue = {
+			...value,
+			data,
+		} as QueryResult<_Data, _Input>
+
 		// if the promise hasn't been resolved yet, do it
 		if (!ctx.promise.resolved) {
-			ctx.promise.resolve(value)
+			ctx.promise.resolve(finalValue)
 
 			// make sure we dont resolve it again
 			ctx.promise.resolved = true
 		}
 
+		this.#lastVariables = ctx.context.draft().stuff.inputs.marshaled
+
 		// the latest value should be written to the store
 		this.update((state) => ({
 			...state,
-			variables: ctx.context.variables ?? {},
-			...value,
-			fetching: false,
+			...finalValue,
 		}))
 	}
 
@@ -283,16 +316,22 @@ export class DocumentObserver<_Data extends GraphQLObject, _Input extends {}> ex
 		// current
 		let propagate = true
 		for (let i = ctx.index; i >= 0 && propagate; i--) {
+			let breakBubble = false
 			// if the step has an error handler, invoke it
-			const errorHandler = this.#plugins[i].error
+			const errorHandler = this.#plugins[i].throw
 			if (errorHandler) {
-				errorHandler(ctx.context, {
-					error,
+				errorHandler(ctx.context.draft(), {
+					initialValue: this.state,
+					client: this.#client,
+					variablesChanged,
+					marshalVariables,
 					// calling next in response to a
 					next: (newContext) => {
+						breakBubble = true
+
 						this.#next({
 							...ctx,
-							context: this.#patchContext(ctx.context, newContext),
+							context: ctx.context.apply(newContext),
 							currentStep: 'setup',
 							index: i,
 						})
@@ -300,7 +339,12 @@ export class DocumentObserver<_Data extends GraphQLObject, _Input extends {}> ex
 						// don't step through the rest of the errors
 						propagate = false
 					},
+					error,
 				})
+			}
+
+			if (breakBubble) {
+				break
 			}
 		}
 
@@ -315,40 +359,6 @@ export class DocumentObserver<_Data extends GraphQLObject, _Input extends {}> ex
 			}
 		}
 	}
-
-	// #patchContext is responsible for keeping any of the internal state up to date
-	#patchContext(old: ClientPluginContext, update: ClientPluginContext) {
-		// look at the variables for ones that are different
-		const changed: Required<ClientPluginContext>['variables'] = {}
-		for (const [name, value] of Object.entries(update.variables ?? {})) {
-			if (value !== old.variables?.[name]) {
-				// we need to marshal the new value
-				changed[name] = value
-			}
-		}
-
-		if (update.artifact.kind !== ArtifactKind.Fragment && Object.keys(changed).length > 0) {
-			// only marshal the changed variables so we don't double marshal
-			const newVariables = {
-				...update.stuff.inputs?.marshaled,
-				...marshalInputs({
-					artifact: update.artifact,
-					input: changed,
-					config: update.config,
-				}),
-			}
-
-			update.stuff.inputs = {
-				marshaled: newVariables,
-				changed: !deepEquals(this.#lastVariables, newVariables),
-			}
-
-			// track the last variables used
-			this.#lastVariables = update.stuff.inputs.marshaled
-		}
-
-		return update
-	}
 }
 
 /**
@@ -362,15 +372,12 @@ export type ClientPlugin =
 		setup?: ClientPluginPhase
 		network?: ClientPluginPhase
 		cleanup?(): any
-		// error is called when a plugin after this raises an exception
-		error?(
-			ctx: ClientPluginContext,
-			args: { error: unknown } & Pick<ClientPluginHandlers, 'next'>
-		): void | Promise<void>
+		// throw is called when a plugin after this raises an exception
+		throw?(ctx: ClientPluginContext, args: ClientPluginErrorHandlers): void | Promise<void>
 	}
 
 type IteratorState = {
-	context: ClientPluginContext
+	context: ClientPluginContextWrapper
 	index: number
 	value: any
 	terminatingIndex: number | null
@@ -382,24 +389,132 @@ type IteratorState = {
 	}
 }
 
-export function marshaledVariables(ctx: ClientPluginContext) {
+// the context is built out of a class so we can easily hide fields from the
+// object that we don't want users to access
+class ClientPluginContextWrapper {
+	// separate the last variables from what we pass to the user
+	#context: ClientPluginContext
+	#lastVariables: Record<string, any> | null
+	constructor({
+		lastVariables,
+		...values
+	}: ClientPluginContext & {
+		lastVariables: Required<ClientPluginContext>['variables'] | null
+	}) {
+		this.#context = values
+		this.#lastVariables = lastVariables
+	}
+
+	get variables() {
+		return this.#context.variables
+	}
+
+	// draft produces a wrapper over the context so users can mutate it without
+	// actually affecting the context values
+	draft(): ClientPluginContext {
+		// so there are some values
+		const ctx = {
+			...this.#context,
+		}
+
+		const lastVariables = this.#lastVariables
+
+		return {
+			...ctx,
+			get stuff() {
+				return ctx.stuff
+			},
+			set stuff(val: any) {
+				ctx.stuff = val
+			},
+			get variables() {
+				return ctx.variables ?? {}
+			},
+			set variables(val: Required<ClientPluginContext>['variables']) {
+				// look at the variables for ones that are different
+				let changed: ClientPluginContext['variables'] = {}
+				for (const [name, value] of Object.entries(val ?? {})) {
+					if (value !== ctx.variables?.[name]) {
+						// we need to marshal the new value
+						changed[name] = value
+					}
+				}
+
+				// since we are mutating deeply nested values in stuff, we need to make sure we don't modify our parent
+				ctx.stuff = {
+					...ctx.stuff,
+					inputs: {
+						...ctx.stuff.inputs,
+					},
+				}
+
+				// update the marshaled version of the inputs
+				// - only update the values that changed (to re-marshal scalars)
+				const hasChanged =
+					Object.keys(changed).length > 0 || !ctx.stuff.inputs || !ctx.stuff.inputs.init
+				if (ctx.artifact.kind !== ArtifactKind.Fragment && hasChanged) {
+					// only marshal the changed variables so we don't double marshal
+					const newVariables = {
+						...ctx.stuff.inputs?.marshaled,
+						...marshalInputs({
+							artifact: ctx.artifact,
+							input: changed,
+							config: ctx.config,
+						}),
+					}
+
+					ctx.stuff.inputs = {
+						init: true,
+						marshaled: newVariables,
+					}
+
+					// track the last variables used
+					ctx.variables = val
+				}
+				ctx.stuff = {
+					...ctx.stuff,
+					inputs: {
+						...ctx.stuff.inputs,
+						changed: !deepEquals(ctx.stuff.inputs.marshaled, lastVariables),
+					},
+				}
+			},
+		}
+	}
+
+	// apply applies the draft value in a new context
+	apply(values: ClientPluginContext): ClientPluginContextWrapper {
+		return new ClientPluginContextWrapper({
+			...values,
+			lastVariables: this.#lastVariables,
+		})
+	}
+}
+
+function marshalVariables<_Data extends GraphQLObject, _Input extends {}>(
+	ctx: ClientPluginContext
+) {
 	return ctx.stuff.inputs?.marshaled ?? {}
 }
 
-export function variablesChanged(ctx: ClientPluginContext) {
+function variablesChanged<_Data extends GraphQLObject, _Input extends {}>(
+	ctx: ClientPluginContext
+) {
 	return ctx.stuff.inputs?.changed
 }
 
 export type Fetch = typeof globalThis.fetch
 
-export type ClientPluginContext = {
+export type ClientPluginContext<_Data extends GraphQLObject = GraphQLObject> = {
 	config: ConfigFile
 	artifact: DocumentArtifact
 	policy?: CachePolicy
 	fetch?: Fetch
 	variables?: Record<string, any>
+	// @ts-ignore
 	metadata?: App.Metadata | null
-	session?: App.Session
+	// @ts-ignore
+	session?: App.Session | null
 	fetchParams?: RequestInit
 	cacheParams?: {
 		layer?: Layer
@@ -417,22 +532,31 @@ export type ClientPluginPhase = {
 	enter?(ctx: ClientPluginContext, handlers: ClientPluginHandlers): void | Promise<void>
 	// exist is called when the result of the next plugin in the chain
 	// is called
-	exit?(ctx: ExitContext, handlers: ClientPluginExitHandlers): void | Promise<void>
+	exit?(ctx: ClientPluginContext, handlers: ClientPluginExitHandlers): void | Promise<void>
 }
 
-export type ExitContext = ClientPluginContext & { value: any }
-
 export type ClientPluginHandlers = {
+	/* The initial value of the query */
+	initialValue: QueryResult
 	/** A reference to the houdini client to access any configuration values */
 	client: HoudiniClient
 	/** Move onto the next step using the provided context.  */
 	next(ctx: ClientPluginContext): void
 	/** Terminate the current chain  */
-	resolve(ctx: ClientPluginContext, data: Partial<NetworkResult<any>>): void
+	resolve(ctx: ClientPluginContext, data: QueryResult): void
+	/** Return true if the variables have changed */
+	variablesChanged: (ctx: ClientPluginContext) => boolean
+	/** Returns the marshaled variables for the operation */
+	marshalVariables: typeof marshalVariables
 }
 
-// /** Exit handlers are the same as enter handles but don't need to resolve with a specific value */
+/** Exit handlers are the same as enter handles but don't need to resolve with a specific value */
 export type ClientPluginExitHandlers = Omit<ClientPluginHandlers, 'resolve'> & {
-	resolve: (ctx: ClientPluginContext, data?: Partial<NetworkResult<any>>) => void
-	value: Partial<NetworkResult<any>>
+	resolve: (ctx: ClientPluginContext, data?: QueryResult) => void
+	value: QueryResult
+}
+
+/** Exit handlers are the same as enter handles but don't need to resolve with a specific value */
+export type ClientPluginErrorHandlers = Omit<ClientPluginHandlers, 'resolve'> & {
+	error: unknown
 }

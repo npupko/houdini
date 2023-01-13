@@ -1,13 +1,11 @@
 import cache from '../../cache'
 import { ArtifactKind, marshalSelection, SubscriptionSpec } from '../../lib'
-import { ClientPlugin } from '../documentObserver'
 import { documentPlugin } from '../utils'
-import { marshaledVariables } from './inputs'
 
-export const mutationPlugin: ClientPlugin = documentPlugin(ArtifactKind.Mutation, () => {
+export const mutationPlugin = documentPlugin(ArtifactKind.Mutation, () => {
 	return {
 		setup: {
-			async enter(ctx, { next }) {
+			async enter(ctx, { next, marshalVariables }) {
 				// treat a mutation like it has an optimistic layer regardless of
 				// whether there actually _is_ one. This ensures that a query which fires
 				// after this mutation has been sent will overwrite any return values from the mutation
@@ -31,7 +29,7 @@ export const mutationPlugin: ClientPlugin = documentPlugin(ArtifactKind.Mutation
 							selection: ctx.artifact.selection,
 							data: optimisticResponse,
 						}))!,
-						variables: marshaledVariables(ctx),
+						variables: marshalVariables(ctx),
 						layer: layer.id,
 					})
 				}
@@ -52,7 +50,14 @@ export const mutationPlugin: ClientPlugin = documentPlugin(ArtifactKind.Mutation
 					},
 				})
 			},
-			exit(ctx, { resolve }) {
+			exit(ctx, { resolve, value }) {
+				const hasErrors = value.errors && value.errors.length > 0
+				// if there are errors, we need to clear the layer before resolving
+				if (hasErrors) {
+					// if the mutation failed, roll the layer back and delete it
+					ctx.cacheParams?.layer?.clear()
+				}
+
 				// merge the layer back into the cache
 				if (ctx.cacheParams?.layer) {
 					cache._internal_unstable.storage.resolveLayer(ctx.cacheParams.layer.id)
@@ -71,7 +76,7 @@ export const mutationPlugin: ClientPlugin = documentPlugin(ArtifactKind.Mutation
 				resolve(ctx)
 			},
 		},
-		error(ctx, { next }) {
+		throw(ctx) {
 			// if there was an error, we need to clear the mutation
 			if (ctx.cacheParams?.layer) {
 				const { layer } = ctx.cacheParams
@@ -80,9 +85,6 @@ export const mutationPlugin: ClientPlugin = documentPlugin(ArtifactKind.Mutation
 				layer.clear()
 				cache._internal_unstable.storage.resolveLayer(layer.id)
 			}
-
-			// we're done
-			next(ctx)
 		},
 	}
 })
